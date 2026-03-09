@@ -1,0 +1,298 @@
+{
+  "name": "🎫 AI Ticket Triage & Routing – Magicmotorsport",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# 🎫 AI Ticket Triage & Routing\n### Magicmotorsport – Technical Support Automation\n\n**Flow:** Webhook → Validation → AI Classification → Supabase → Response\n\n**Teams:** tech_support | billing | sales | rma\n**Priority:** low | medium | high",
+        "height": 180,
+        "width": 500,
+        "color": 5
+      },
+      "id": "sticky-title",
+      "name": "Sticky Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [64, -80]
+    },
+    {
+      "parameters": {
+        "content": "## ⚙️ Setup Required\n\n**1. n8n Variables** (Settings → Variables):\n- SUPABASE_URL → https://xyz.supabase.co\n- SUPABASE_ANON_KEY → your-key\n\n**2. Credentials:** Create an OpenAI API credential and connect it to the OpenAI GPT-4o Mini node\n\n**Test:**\ncurl -X POST <your-n8n-url>/webhook/ticket-triage \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"email\":\"test@test.com\",\"subject\":\"Flex error E07\",\"description\":\"Device not connecting after firmware update\"}'",
+        "height": 240,
+        "width": 580,
+        "color": 3
+      },
+      "id": "sticky-config",
+      "name": "Sticky Note - Config",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [688, -96]
+    },
+    {
+      "parameters": {
+        "content": "## 🗄️ Supabase SQL Schema\n\nRun supabase/schema.sql in your Supabase SQL editor to create:\n- tickets table\n- notifications table\n\nSee the schema.sql file in the repository.",
+        "height": 180,
+        "width": 420,
+        "color": 4
+      },
+      "id": "sticky-sql",
+      "name": "Sticky Note - SQL",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1408, -96]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-triage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-receive",
+      "name": "Receive Ticket",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 448],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first();\nconst body = item.json.body || item.json;\nconst email = (body.email || '').toString().trim().toLowerCase();\nconst subject = (body.subject || '').toString().trim();\nconst description = (body.description || '').toString().trim();\nconst missing = [];\nif (!email || !email.includes('@')) missing.push('email');\nif (!subject || subject.length < 3) missing.push('subject');\nif (!description || description.length < 10) missing.push('description');\nif (missing.length > 0) {\n  return [{ json: { valid: false, error: 'Missing: ' + missing.join(', '), missingFields: missing, receivedAt: new Date().toISOString() } }];\n}\nconst ticketId = 'TKT-' + Date.now() + '-' + Math.random().toString(36).substr(2,5).toUpperCase();\nreturn [{ json: { valid: true, ticketId: ticketId, email: email, subject: subject, description: description, receivedAt: new Date().toISOString() } }];"
+      },
+      "id": "code-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [464, 448],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-001",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [688, 448],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error, missing: $json.missingFields }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-400",
+      "name": "Respond – Validation Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [912, 624]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify this Magicmotorsport support ticket:\nID: {{ $json.ticketId }}\nFrom: {{ $json.email }}\nSubject: {{ $json.subject }}\nDescription: {{ $json.description }}\n\nReturn classification JSON.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a support ticket classifier for Magicmotorsport (ECU tuning hardware: Flex, Master, Slave devices).\n\nReturn ONLY valid JSON with:\n- team: tech_support | billing | sales | rma\n- priority: low | medium | high\n- category: snake_case label\n- summary: 1-2 sentence English summary\n- confidence: 0.0-1.0\n\nRules: tech_support=device/firmware/software issues; billing=payments/invoices; sales=pre-sale/licensing; rma=defective hardware/returns.\nhigh=device non-functional; medium=partial failure; low=question."
+        }
+      },
+      "id": "agent-classify",
+      "name": "Classify Ticket (AI Agent)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [912, 288]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "id": "openai-model",
+      "name": "OpenAI GPT-4o Mini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [784, 100],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{ \"team\": \"tech_support\", \"priority\": \"high\", \"category\": \"firmware_error\", \"summary\": \"Flex device E07 error after firmware update.\", \"confidence\": 0.94 }",
+        "autoFix": true
+      },
+      "id": "output-parser",
+      "name": "Ticket Schema Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [1040, 100]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const agentOut = $input.first().json;\nconst c = agentOut.output || agentOut;\nconst src = $('Validate Input').first().json;\nconst ticketData = {\n  ticketId: src.ticketId,\n  email: src.email,\n  subject: src.subject,\n  description: src.description,\n  receivedAt: src.receivedAt,\n  team: c.team || 'tech_support',\n  priority: c.priority || 'medium',\n  category: c.category || 'general',\n  summary: c.summary || src.subject,\n  confidence: parseFloat(c.confidence) || 0.5,\n  status: 'open'\n};\nreturn [{ json: ticketData }];"
+      },
+      "id": "code-merge",
+      "name": "Prepare Ticket Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 288],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/tickets",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_ANON_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_ANON_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $('Prepare Ticket Data').item.json.ticketId, email: $('Prepare Ticket Data').item.json.email, subject: $('Prepare Ticket Data').item.json.subject, description: $('Prepare Ticket Data').item.json.description, team: $('Prepare Ticket Data').item.json.team, priority: $('Prepare Ticket Data').item.json.priority, category: $('Prepare Ticket Data').item.json.category, summary: $('Prepare Ticket Data').item.json.summary, confidence: $('Prepare Ticket Data').item.json.confidence, status: $('Prepare Ticket Data').item.json.status, received_at: $('Prepare Ticket Data').item.json.receivedAt }) }}",
+        "options": {
+          "retry": { "enabled": true, "maxRetries": 2, "waitBetweenRetries": 1000 }
+        }
+      },
+      "id": "http-supabase-ticket",
+      "name": "Save Ticket → Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1344, 288],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const t = $('Prepare Ticket Data').first().json;\nconst pMap = { high: '[HIGH]', medium: '[MED]', low: '[LOW]' };\nconst tMap = { tech_support: 'Tech Support', billing: 'Billing', sales: 'Sales', rma: 'RMA' };\nconst notif = {\n  type: 'new_ticket',\n  ticket_id: t.ticketId,\n  team: t.team,\n  priority: t.priority,\n  message: (pMap[t.priority] || '[?]') + ' ' + (tMap[t.team] || t.team) + ' - ' + t.email + ': ' + t.subject + ' (' + t.category + ')',\n  created_at: new Date().toISOString()\n};\nreturn [{ json: notif }];"
+      },
+      "id": "code-notif",
+      "name": "Prepare Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1568, 288],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/notifications",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $vars.SUPABASE_ANON_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $vars.SUPABASE_ANON_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "retry": { "enabled": true, "maxRetries": 2, "waitBetweenRetries": 1000 }
+        }
+      },
+      "id": "http-supabase-notif",
+      "name": "Save Notification → Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1792, 288],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, ticket_id: $('Prepare Ticket Data').item.json.ticketId, team: $('Prepare Ticket Data').item.json.team, priority: $('Prepare Ticket Data').item.json.priority, category: $('Prepare Ticket Data').item.json.category, summary: $('Prepare Ticket Data').item.json.summary, status: 'open', message: 'Classified and routed to ' + $('Prepare Ticket Data').item.json.team, timestamp: new Date().toISOString() }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-200",
+      "name": "Respond – Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2000, 288]
+    }
+  ],
+  "connections": {
+    "Receive Ticket": {
+      "main": [[{ "node": "Validate Input", "type": "main", "index": 0 }]]
+    },
+    "Validate Input": {
+      "main": [[{ "node": "Is Valid?", "type": "main", "index": 0 }]]
+    },
+    "Is Valid?": {
+      "main": [
+        [{ "node": "Classify Ticket (AI Agent)", "type": "main", "index": 0 }],
+        [{ "node": "Respond – Validation Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "OpenAI GPT-4o Mini": {
+      "ai_languageModel": [[{ "node": "Classify Ticket (AI Agent)", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Ticket Schema Parser": {
+      "ai_outputParser": [[{ "node": "Classify Ticket (AI Agent)", "type": "ai_outputParser", "index": 0 }]]
+    },
+    "Classify Ticket (AI Agent)": {
+      "main": [[{ "node": "Prepare Ticket Data", "type": "main", "index": 0 }]]
+    },
+    "Prepare Ticket Data": {
+      "main": [[{ "node": "Save Ticket → Supabase", "type": "main", "index": 0 }]]
+    },
+    "Save Ticket → Supabase": {
+      "main": [[{ "node": "Prepare Notification", "type": "main", "index": 0 }]]
+    },
+    "Prepare Notification": {
+      "main": [[{ "node": "Save Notification → Supabase", "type": "main", "index": 0 }]]
+    },
+    "Save Notification → Supabase": {
+      "main": [[{ "node": "Respond – Success", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Rome",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}
